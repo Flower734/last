@@ -1,0 +1,49 @@
+#include <CL/sycl.hpp>
+#include <vector>
+
+using namespace sycl;
+
+struct index {
+    int len;                        // 长度字段，表示数组的长度
+    std::vector<unsigned int> arr;  // 使用std::vector<unsigned int>存储二进制数据的容器
+};
+
+index& SVS(int* list, std::vector<index>& idx, int num) {
+    index& s = idx[list[0]];
+    // 创建SYCL队列，以便提交并行执行的任务
+    queue q;
+    // 定义用于存储索引的SYCL缓冲区
+    buffer<int, 1> listBuf(list, range<1>(num));
+    for (int i = 1; i < num; i++) {
+        int count = 0;
+        int length = s.len;
+        // 定义用于s和idx[list[i]]数组的SYCL缓冲区
+        buffer<unsigned int, 1> sArrBuf(s.arr.data(), range<1>(s.len));
+        buffer<unsigned int, 1> idxArrBuf(idx[list[i]].arr.data(), range<1>(idx[list[i]].len));     
+        // 提交parallel_for任务以比较元素并更新s
+        q.submit([&](handler& h) {
+            auto listAccessor = listBuf.get_access<access::mode::read>(h);
+            auto sArrAccessor = sArrBuf.get_access<access::mode::read_write>(h);
+            auto idxArrAccessor = idxArrBuf.get_access<access::mode::read>(h);
+            h.parallel_for(range<1>(length), [=](id<1> idx) {
+                int j = idx[0];
+                bool isExit = false;
+                for (int t = 0; t < idx[listAccessor[0]].len; t++) {
+                    if (sArrAccessor[count] == idxArrAccessor[t]) {
+                        isExit = true;
+                        break;
+                    }
+                }
+                if (isExit == false) {
+                    s.len--;
+                    sArrAccessor[j] = sArrAccessor[s.len]; // 将要删除的元素与最后一个元素交换位置
+                }
+                else {
+                    count++;
+                }
+            });
+        });
+    }
+    // 等待所有任务完成
+    q.wait_and_throw();
+    return s;
