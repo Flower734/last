@@ -1,0 +1,360 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <math.h>
+#include <time.h>
+#include <string>
+#include <string.h>
+#include <sstream>
+#include <algorithm>
+#include <pthread.h>
+#include <arm_neon.h>
+#define MAXSIZE 2000
+using namespace std;
+using std::vector;
+class index {
+public:
+	int len = 0;
+	vector<unsigned int> arr;
+};
+vector<index> idx;
+
+bool operator<(const index& s1, const index& s2)
+{
+	return s1.len < s2.len; //从小到大排序
+}
+
+pthread_t thread[4];
+
+typedef struct {
+	int t_id;//线程id
+	int num_of_list;//待测的第几组list
+	int e; //用于比较的数
+	index s0;
+	bool isfound = false;
+	bool have;
+}threadParam_t;
+threadParam_t param[4];
+
+void* threadFunc_forADP(void* param) {
+	threadParam_t* p = (threadParam_t*)param;
+	if (p->have == true) {
+		int t_id = p->t_id; //线程ID
+		int num_of_list = p->num_of_list;  //待测列的编号
+		bool found = p->isfound;
+
+		unsigned int e = p->e;
+		uint32x4_t e_ = vmovq_n_u32(e);
+		uint32_t length = ceil(p->s0.len / 4) * 4;
+		for (int m = p->s0.len; m < length; m++)
+			p->s0.arr[m] = 0;
+
+
+		for (int i = 0; i < length; i+=4)
+		{
+			found = false;
+			unsigned int res[4] = { 0 };
+			uint32x4_t temp1 = vld1q_u32(&p->s0.arr[i]);
+			uint32x4_t result = vceqq_u32(e_, temp1);
+			vst1q_u32(res, result);
+
+			if (res[0] == 1 || res[1] == 1 || res[2] == 1 || res[3] == 1)
+			{
+				found = true;
+				break;
+			}
+		}
+
+		p->isfound = found;
+	}
+	return p;
+}
+
+
+vector<unsigned int>& ADP(int* list, vector<index>& idx, int num)
+{
+	vector<unsigned int> S;
+	int s = 1;
+	bool found = true;
+	vector<index> idx_;
+	for (int i = 0; i < num; i++)
+	{
+		idx_.push_back(idx[list[i]]);
+	}
+	sort(idx_.begin(), idx_.end());
+
+	for (int t = 0; t < idx_[0].len; t++)
+	{
+		s = 1;
+		unsigned int e = idx_[0].arr[t];
+		while (s < num && found == true)
+		{
+
+
+			for (int k = 0; k < 4; k++, s++) {
+				if (s < num) {
+					param[k].num_of_list = list[s]; //待测的第s组list
+					param[k].t_id = k;
+					param[k].e = e;
+					param[k].s0 = idx_[s];
+					param[k].isfound = found;
+					param[k].have = true;
+					pthread_create(&thread[k], NULL, threadFunc_forADP, &param[k]);
+				}
+				else param[k].have = false;
+			}
+			void* res;
+			for (int k = 0; k < num - 1; k++) {
+				pthread_join(thread[k], &res);
+				param[k] = *(threadParam_t*)res;
+			}
+			for (int k = 0; k < 4; k++)
+				if (param[k].isfound == false)
+					found = false;
+
+		}
+
+		if (s >= num && found == true)
+			S.push_back(e);
+	}
+
+	return S;
+}
+
+
+class BitMap
+{
+public:
+	BitMap(int range)
+	{
+		//开辟空间
+		this->m_bits.resize(range / 32 + 1);
+		this->fir_index.resize(range / 1024 + 1);
+		this->sec_index.resize(range / 32768 + 1);
+	}
+
+	void set(int data)
+	{
+		int index0 = data / 32; //数组索引即区间
+		int index1 = index0 / 1024;
+		int index2 = index1 / 1024;
+		int temp0 = data % 32; //具体位置索引
+		int temp1 = temp0 / 32;
+		int temp2 = temp1 / 32;
+
+		this->m_bits[index0] |= (1 << temp0); //左移4位置为1
+		this->fir_index[index1] |= (1 << temp1);
+		this->sec_index[index2] |= (1 << temp2);
+	}
+
+	void reset(int data)
+	{
+		int index = data / 32;
+		int temp = data % 32;
+		this->m_bits[index] &= ~(1 << temp); //取反
+	}
+	vector<int> m_bits;
+	vector<int> fir_index;
+	vector<int> sec_index;
+};
+BitMap s_(30000000);
+
+struct threadParam_bitamp {};
+typedef struct NamedType :threadParam_bitamp {
+	int t_id;//线程id
+	bool isExit = false;
+	bool have;
+}threadParam_bitmap;
+threadParam_bitmap param_bitmap[4];
+
+vector<int>& search(unsigned int pp[])
+{
+	vector<int> the_index;
+	int num = sizeof(*pp) / sizeof(unsigned int);
+	for (int i = 0; i < num; i++)
+	{
+		if (pp[i] == 0)
+			the_index.push_back(i);
+	}
+	return the_index;
+}
+
+
+vector<BitMap> ss;
+void* threadFunc_forbitmap(void* param_bitmap) {
+	threadParam_bitmap* p = (threadParam_bitmap*)param_bitmap;
+	int isExit = p->isExit;
+	int id = p->t_id;
+	unsigned int res[4] = { 0 };
+	for (int j = 0; j < s_.sec_index.size(); j += 4)
+	{
+		uint32x4_t zero_ = vmovq_n_u32(0);//��ʼ��Ϊȫ0�����ڱȽ�
+		uint32x4_t temp0 = vmovq_n_u32(s_.sec_index[j]);//��0����¼�Ķ����������i����¼��ʼ�Ƚ�
+		uint32x4_t temp1 = vld1q_u32(&ss[id].sec_index[j]);//��i����¼�ĵ�j��Ԫ�ؿ�ʼ����ȡ4��Ԫ��
+		uint32x4_t result = vornq_u32(temp0, temp1);//��λ���
+		uint32x4_t isZero = vceqq_u32(zero_, temp0);//�Ƚ�
+		vst1q_u32(res, result);//result���res
+		vector<int> the_index0 = search(res);
+		int m = 0;
+		while (!the_index0.empty() && s_.sec_index[j] != 0)
+		{
+			int t = the_index0[m];
+			for (t = t * 32; t < t + 32; t += 4)
+			{
+				temp0 = vmovq_n_u32(s_.fir_index[t]);
+				temp1 = vld1q_u32(&ss[id].fir_index[t]);
+				result = vornq_u32(temp0, temp1);
+				isZero = vceqq_u32(zero_, temp0);
+				vst1q_u32(res, result);
+				vector<int> the_index1 = search(res);
+				int n = 0;
+				while (!the_index1.empty() && s_.fir_index[t] != 0)
+				{
+					int l = the_index1[n];
+					for (l = l * 32; l < l + 32; l += 4)
+					{
+						temp0 = vmovq_n_u32(s_.m_bits[l]);
+						temp1 = vld1q_u32(&ss[id].m_bits[l]);
+						result = vornq_u32(temp0, temp1);
+						isZero = vceqq_u32(zero_, temp0);
+						vst1q_u32(res, result);
+						vector<int> the_index2 = search(res);
+						int u = 0;
+						while (!the_index2.empty() && s_.m_bits[l] != 0)
+						{
+							int x = the_index2[u];
+							x *= 32;
+							if ((s_.m_bits[x] ^ ss[id].m_bits[x]) == 0 && s_.m_bits[x] != 0)
+								isExit = true;
+							u++;
+							the_index2.pop_back();
+						}
+					}
+				}
+				n++;
+				the_index1.pop_back();
+			}
+			m++;
+			the_index0.pop_back();
+		}
+		if (isExit == false)
+		{
+			s_.sec_index[j] = 0;
+		}
+	}
+	return p;
+}
+
+void compare(int* list, vector<index>& idx, int num)
+{
+	vector<index> idx_;
+	for (int i = 0; i < num; i++)
+	{
+		idx_.push_back(idx[list[i]]);
+	}
+	sort(idx_.begin(), idx_.end());
+	vector<BitMap> bitmap;
+	for (int i = 0; i < num; i++)
+	{
+		bitmap.push_back(30000000);
+		for (int j = 0; j < idx_[i].len; j++)
+		{
+			bitmap[i].set(idx_[i].arr[j]);
+		}
+	}
+
+
+	int count = 0;
+	int isExist = -1;
+	s_ = bitmap[0];
+	for (int i = 1; i < num; i += 4)
+	{
+		int temp = i;
+		for (int cnt = 0; cnt < 4; cnt++)
+			ss.push_back(30000000);
+		for (int k = 0; k < 4; k++)
+		{
+
+			if (temp < num)
+			{
+				ss[k] = bitmap[temp];
+				param_bitmap[k].t_id = k;
+				param_bitmap[k].have = true;
+				pthread_create(&thread[k], NULL, threadFunc_forbitmap, &param_bitmap[k]);
+			}
+			else
+			{
+				param_bitmap[k].have = false;
+			}
+			temp++;
+		}
+
+		ss.clear();
+	}
+}
+int main() {
+
+	fstream file;
+	file.open("ExpIndex", ios::binary | ios::in);
+	if (!file.is_open()) {
+		cout << "No file";
+		return 0;
+
+	}
+
+	for (int i = 0; i < 2000; i++) {
+		index temp;
+		file.read((char*)&temp.len, sizeof(temp.len));
+		for (int j = 0; j < (temp.len); j++)
+		{
+			unsigned int binary_temp;
+			file.read((char*)&binary_temp, sizeof(binary_temp));
+			temp.arr.push_back(binary_temp);
+		}
+		idx.push_back(temp);
+	}
+	file.close();
+	/*---------------------------------------------------------------------------------------------------------*/
+	file.open("ExpQuery", ios::in);
+	int query[1000][5] = { 0 };
+	string line;
+	int count = 0;
+	while (getline(file, line)) {
+		stringstream ss; //������
+		ss << line; //�����д�ֵ
+		int a = 0;
+		while (!ss.eof()) {
+			int temp;
+			ss >> temp;
+			query[count][a] = temp;
+			a++;
+		}
+		count++;
+	}
+	/*-----------------------------------------------------------------------------------------------------------*/
+
+	//SVS
+
+	clock_t start, end_;
+	start = clock();
+	for (int i = 0; i < 1000; i++) {
+		int num = 0;
+		for (int j = 0; j < 5; j++) {
+			if (query[i][j] != 0) {
+				num++;
+			}
+		}
+		int* list = new int[num];
+		for (int j = 0; j < num; j++) {
+			list[j] = query[i][j];
+		}
+
+		compare(list, idx, num);
+
+	}
+	end_ = clock();
+
+	cout << "ADP" << (end_ - start) / 1000 << endl;
+
+	return 0;
+}

@@ -1,0 +1,114 @@
+
+class BitMap
+{
+public:
+	BitMap(int range)
+	{
+		//开辟空间
+		this->m_bits.resize(range / 32 + 1);
+		this->fir_index.resize(range / 1024 + 1);
+		this->sec_index.resize(range / 32768 + 1);
+	}
+
+	void set(int data)
+	{
+		int index0 = data / 32; //数组索引即区间
+		int index1 = index0 / 1024;
+		int index2 = index1 / 1024;
+		int temp0 = data % 32; //具体位置索引
+		int temp1 = temp0 / 32;
+		int temp2 = temp1 / 32;
+
+		this->m_bits[index0] |= (1 << temp0); //左移4位置为1
+		this->fir_index[index1] |= (1 << temp1);
+		this->sec_index[index2] |= (1 << temp2);
+	}
+
+	void reset(int data)
+	{
+		int index = data / 32;
+		int temp = data % 32;
+		this->m_bits[index] &= ~(1 << temp); //取反
+	}
+	vector<int> m_bits;
+	vector<int> fir_index;
+	vector<int> sec_index;
+};
+BitMap s_(30000000);
+vector<index> idx_;
+vector<BitMap> ans;
+void intersect(int num,BitMap* bitmap)
+{
+	s_ = bitmap[0];
+	bool isExist = false;
+	for (int i = 1; i < num; i++)
+	{
+		for (int j = 0; j < bitmap[0].sec_index.size(); j++)
+		{
+			if ((s_.sec_index[j] ^ bitmap[i].sec_index[j]) == 0 && s_.sec_index[j] != 0)//��λ���
+			{
+				for (int t = j * 32; t < j * 32 + 32; t++)
+				{
+					if ((s_.fir_index[t] ^ bitmap[i].sec_index[t]) == 0 && s_.fir_index[t] != 0)
+					{
+						for (int l = t * 32; l < t * 32 + 32; l++)
+							if ((s_.m_bits[l] ^ bitmap[i].m_bits[l]) == 0 && s_.m_bits[l] != 0)
+								isExist = true;
+					}
+				}
+			}
+			if (isExist == false)
+			{
+				s_.sec_index[j] = 0;
+			}
+		}
+	}
+	ans.push_back(bitmap[0]);
+}
+
+void compare(int* list, vector<index>& idx, int num)
+{
+
+	for (int i = 0; i < num; i++)
+	{
+		idx_.push_back(idx[list[i]]);
+	}
+	sort(idx_.begin(), idx_.end());
+	vector<BitMap> bitmap;
+	for (int i = 0; i < num; i++)
+	{
+		bitmap.push_back(30000000);
+		for (int j = 0; j < idx_[i].len; j++)
+		{
+			bitmap[i].set(idx_[i].arr[j]);
+		}
+	}
+	int rank, size;
+	MPI_Status status;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	int count = 0;
+	bool isExist = false;
+	s_ = bitmap[0];
+	int numbers = num / size;
+	BitMap s(30000000);
+	if (rank == 0) {
+		for (int i = 1; i < size; i++) {
+			for (int j = i * size; j < (i + 1) * size ; j++) {
+				s = bitmap[i];
+			}
+			MPI_Send(&s, numbers, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD);
+		}
+		for (int j = numbers * (size - 1); j < num; j++)
+			s = bitmap[j];
+		intersect(num - numbers * (size - 1), &s);
+		intersect(size, ans);
+	}
+	else {
+		MPI_Recv(&s, numbers, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUSES_IGNORE);
+		intersect(numbers, &s);
+		MPI_Send(&s, numbers, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD);
+	}
+
+}
